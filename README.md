@@ -1,6 +1,7 @@
 # node-pointer-compression
 
-[![Build](https://github.com/Smeagolworms4/node-pointer-compression/actions/workflows/build.yml/badge.svg)](https://github.com/Smeagolworms4/node-pointer-compression/actions/workflows/build.yml)
+[![Build amd64](https://github.com/Smeagolworms4/node-pointer-compression/actions/workflows/build-amd64.yml/badge.svg)](https://github.com/Smeagolworms4/node-pointer-compression/actions/workflows/build-amd64.yml)
+[![Build arm64](https://github.com/Smeagolworms4/node-pointer-compression/actions/workflows/build-arm64.yml/badge.svg)](https://github.com/Smeagolworms4/node-pointer-compression/actions/workflows/build-arm64.yml)
 [![Docker Hub](https://img.shields.io/docker/pulls/smeagolworms4/node-pointer-compression?label=Docker%20Hub&logo=docker&color=0b7285)](https://hub.docker.com/r/smeagolworms4/node-pointer-compression)
 [![Licence](https://img.shields.io/badge/licence-MIT-3d7a3d)](https://github.com/Smeagolworms4/node-pointer-compression/blob/main/LICENSE)
 
@@ -89,13 +90,14 @@ CMD ["server.js"]
 - [`tools/versions.mjs`](https://github.com/Smeagolworms4/node-pointer-compression/blob/main/tools/versions.mjs):
   reads the [Node.js release schedule](https://github.com/nodejs/Release) and the list of releases,
   keeps the latest version of every maintained line, drops the ones already on Docker Hub.
-- [`.github/workflows/build.yml`](https://github.com/Smeagolworms4/node-pointer-compression/blob/main/.github/workflows/build.yml):
-  runs every day. Each missing version is compiled on a native runner per architecture (no
-  emulation), then tested before anything is pushed:
-  [`test/smoke.mjs`](https://github.com/Smeagolworms4/node-pointer-compression/blob/main/test/smoke.mjs)
+- [`.github/workflows/`](https://github.com/Smeagolworms4/node-pointer-compression/tree/main/.github/workflows):
+  one workflow per architecture (`build-amd64.yml`, `build-arm64.yml`), each run every day on a
+  native runner, with no emulation. A missing version is compiled, then tested before anything is
+  pushed: [`test/smoke.mjs`](https://github.com/Smeagolworms4/node-pointer-compression/blob/main/test/smoke.mjs)
   checks that pointer compression is on, that objects really take 4-byte references, and that
-  crypto, zlib, ICU and WebAssembly work; a Node-API addon is installed and loaded. A version gets
-  its tags only when both architectures passed.
+  crypto, zlib, ICU and WebAssembly work; a Node-API addon is installed and loaded. The image is
+  pushed as `<version>-alpine-<arch>`; a version gets its multi-architecture tags once both
+  architectures are there, and this README is copied to Docker Hub.
 
 Build one yourself:
 

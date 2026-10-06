@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Lists the Node.js versions to build: the latest release of every maintained line (Node.js release schedule),
-// minus the ones already published on Docker Hub.
+// Lists the Node.js versions to build for one architecture: the latest release of every maintained line (Node.js
+// release schedule), minus the ones whose image for that architecture is already on Docker Hub.
 //
-// Usage: node tools/versions.mjs            prints the build matrix as JSON
+// Usage: node tools/versions.mjs            prints {"include": [...to build], "all": [...every maintained version]}
 // Environment:
 //   IMAGE       Docker Hub repository checked for existing tags (owner/name); empty: nothing is considered published
+//   ARCH        architecture whose images are checked (amd64, arm64): tag <version>-alpine-<ARCH>
 //   MIN_MAJOR   oldest line built (default 24, the oldest line with an upstream pointer-compression binary)
 //   ONLY        build this version (24.21.0) or this line (24) only, published or not
 //   FORCE       "true": rebuild the versions already published
@@ -13,6 +14,7 @@ const IMAGE = process.env.IMAGE ?? ''
 const MIN_MAJOR = Number(process.env.MIN_MAJOR || 24)
 const ONLY = (process.env.ONLY ?? '').replace(/^v/, '')
 const FORCE = process.env.FORCE === 'true'
+const ARCH = process.env.ARCH || 'amd64'
 const today = process.env.TODAY || new Date().toISOString().slice(0, 10)
 
 const json = async (url) => {
@@ -47,6 +49,7 @@ const published = async (tag) => {
 }
 
 const include = []
+const all = []
 for (const line of lines) {
   let version = latestOf(line.major)
   if (!version) continue
@@ -57,17 +60,18 @@ for (const line of lines) {
       version = ONLY
     } else if (Number(ONLY) !== line.major) continue
   }
-  if (!ONLY && !FORCE && (await published(`${version}-alpine`))) continue
   // moving tags only follow the latest release of a line
   const aliases = version === latestOf(line.major) ? [String(line.major), ...(line.major === lts ? ['lts'] : []), ...(line.major === newest ? ['current'] : [])] : []
-  include.push({
+  const entry = {
     version,
     major: line.major,
     // tag prefixes: "<prefix>-alpine" and "<prefix>-alpine-slim"
     tags: [version, ...aliases].join(' '),
     // the newest LTS line (the newest line while none is LTS) also gets the bare tags: "alpine" / "latest", "alpine-slim" / "slim"
     latest: version === latestOf(line.major) && line.major === (lts ?? newest),
-  })
+  }
+  all.push(entry)
+  if (ONLY || FORCE || !(await published(`${version}-alpine-${ARCH}`))) include.push(entry)
 }
 
-console.log(JSON.stringify({ include }))
+console.log(JSON.stringify({ include, all }))

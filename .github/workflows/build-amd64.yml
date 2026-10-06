@@ -1,0 +1,44 @@
+name: Build amd64
+
+# Daily build of the missing Node.js versions for linux/amd64 (see build-arch.yml).
+# Manual run: `version` builds one version (24.21.0) or the latest of one line (24), published or not;
+# `force` rebuilds what is already published; `push` unticked builds and tests without publishing.
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Node.js version (24.21.0) or line (24) to build; empty: every missing version'
+        required: false
+        default: ''
+      force:
+        description: 'Rebuild versions already published'
+        type: boolean
+        default: false
+      push:
+        description: 'Push the images to Docker Hub'
+        type: boolean
+        default: true
+
+# One run per architecture at a time: two runs would build the same versions.
+concurrency:
+  group: build-amd64
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  amd64:
+    uses: ./.github/workflows/build-arch.yml
+    with:
+      arch: amd64
+      runner: ubuntu-24.04
+      version: ${{ inputs.version || '' }}
+      force: ${{ inputs.force || false }}
+      push: ${{ github.event_name == 'schedule' || inputs.push }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}

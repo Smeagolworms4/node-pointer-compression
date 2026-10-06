@@ -1,0 +1,154 @@
+name: Build one architecture
+
+# Reusable workflow, called by build-amd64.yml and build-arm64.yml: one architecture per workflow, so that a run
+# only lasts the compilation of that architecture and a failure on one does not hold the other back.
+#
+# Lists the latest release of each maintained Node.js line (tools/versions.mjs) and builds the ones whose image for
+# this architecture is not on Docker Hub yet: Node.js compiled from source with V8 pointer compression, on Alpine,
+# on a native runner (no emulation). Every image is smoke-tested before it is pushed as `<version>-alpine-<arch>`.
+# The multi-architecture tags are then created for every version whose two architectures are published
+# (tools/publish-tags.sh): whichever architecture finishes last tags the version.
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: 'amd64 or arm64'
+        type: string
+        required: true
+      runner:
+        description: 'Runner of that architecture'
+        type: string
+        required: true
+      version:
+        description: 'Node.js version (24.21.0) or line (24) to build; empty: every missing version'
+        type: string
+        default: ''
+      force:
+        description: 'Rebuild versions already published'
+        type: boolean
+        default: false
+      push:
+        description: 'Push the images to Docker Hub'
+        type: boolean
+        default: true
+    secrets:
+      DOCKER_USERNAME:
+        required: true
+      DOCKER_PASSWORD:
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # Docker Hub repository (owner/name); repository variable IMAGE overrides it.
+  IMAGE: ${{ vars.IMAGE || 'smeagolworms4/node-pointer-compression' }}
+  ARCH: ${{ inputs.arch }}
+
+jobs:
+  detect:
+    name: Versions to build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.versions.outputs.matrix }}
+      all: ${{ steps.versions.outputs.all }}
+      any: ${{ steps.versions.outputs.any }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Maintained Node.js lines not yet published for this architecture
+        id: versions
+        env:
+          ONLY: ${{ inputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          versions="$(node tools/versions.mjs)"
+          echo "matrix=$(jq -c '{include: .include}' <<< "$versions")" >> "$GITHUB_OUTPUT"
+          echo "all=$(jq -c .all <<< "$versions")" >> "$GITHUB_OUTPUT"
+          echo "any=$(jq '.include | length > 0' <<< "$versions")" >> "$GITHUB_OUTPUT"
+          { echo "### Versions to build for $ARCH"; jq -r '.include[] | "- Node.js \(.version)"' <<< "$versions"; } >> "$GITHUB_STEP_SUMMARY"
+          jq -e '.include | length > 0' <<< "$versions" > /dev/null || echo 'Nothing to build: every maintained line is published.' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Node.js ${{ matrix.version }} ${{ inputs.arch }}
+    needs: detect
+    if: needs.detect.outputs.any == 'true'
+    runs-on: ${{ inputs.runner }}
+    # Compiling Node.js takes hours on a 4-core runner; 360 minutes is the limit of hosted runners.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
+    env:
+      VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build (full, then slim from the same compilation)
+        run: |
+          docker build --build-arg "NODE_VERSION=$VERSION" --target full -t "$IMAGE:$VERSION-alpine-$ARCH" .
+          docker build --build-arg "NODE_VERSION=$VERSION" --target slim -t "$IMAGE:$VERSION-alpine-slim-$ARCH" .
+          docker images "$IMAGE" --format '{{.Tag}}  {{.Size}}' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke tests
+        run: |
+          for tag in "$VERSION-alpine-$ARCH" "$VERSION-alpine-slim-$ARCH"; do
+            docker run --rm -v "$PWD/test:/test:ro" "$IMAGE:$tag" node /test/smoke.mjs "$VERSION"
+          done
+          # entrypoint and user, as in the official image
+          test "$(docker run --rm "$IMAGE:$VERSION-alpine-slim-$ARCH" -p '1+1')" = 2
+          test "$(docker run --rm --user node "$IMAGE:$VERSION-alpine-slim-$ARCH" id -u)" = 1000
+
+      # A native addon shipped as a Node-API prebuilt binary must load as is on this build.
+      - name: Native addon (Node-API prebuild)
+        run: |
+          docker run --rm "$IMAGE:$VERSION-alpine-$ARCH" sh -ec '
+            mkdir /tmp/addon && cd /tmp/addon && npm init -y > /dev/null
+            npm install --no-audit --no-fund better-sqlite3 > /dev/null
+            node -e "const D = require(\"better-sqlite3\"); console.log(\"better-sqlite3, SQLite\", new D(\":memory:\").prepare(\"select sqlite_version() v\").get().v)"'
+
+      - uses: docker/login-action@v4
+        if: inputs.push
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push the images of this architecture
+        if: inputs.push
+        run: |
+          docker push "$IMAGE:$VERSION-alpine-$ARCH"
+          docker push "$IMAGE:$VERSION-alpine-slim-$ARCH"
+
+  tags:
+    name: Multi-architecture tags
+    needs: [detect, build]
+    # also when nothing was built here or one version failed: the versions complete on Docker Hub are still tagged
+    if: always() && needs.detect.result == 'success' && inputs.push
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Tag the versions whose two architectures are published
+        env:
+          ALL: ${{ needs.detect.outputs.all }}
+        run: tools/publish-tags.sh "$ALL"
+
+      - name: README on Docker Hub
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: tools/dockerhub-readme.sh
